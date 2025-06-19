@@ -1,0 +1,121 @@
+---
+services:
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    hostname: wireguard
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE #optional
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: time_zone
+      SERVERURL: ${WG_HOST:? Variable not set} #optional
+      SERVERPORT: ${WG_PORT:? Variable not set} #optional
+      PEERS: ${WG_PEERS:? Variable not set} #optional
+      # PEERDNS: 1.1.1.1 #optional
+      PEERDNS: ${PIHOLE_IP:? Variable not set} # Pihole IP
+      INTERNAL_SUBNET: ${WG_INTERNAL_SUBNET:? Variable not set} #optional
+      ALLOWEDIPS: ${WG_ALLOWED_IPS:? Variable not set} #optional
+      PERSISTENTKEEPALIVE_PEERS: 25 #optional
+      LOG_CONFS: true #optional
+      POSTUP: ./custom/postup.sh
+      POSTDOWN: ./custom/postdown.sh
+    volumes:
+      - ./network/wireguard/config:/config
+      - /lib/modules:/lib/modules #optional
+    ports:
+      - 51820:51820/udp
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped
+    networks:
+      network_backend:
+        ipv4_address: ${WG_IP:? Variable not set} # Internal IP of wireguard
+    env_file:
+      - .env
+
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    restart: unless-stopped
+    hostname: pihole
+    dns:
+      # - 127.0.0.1 # I saw somewhere that if it's docker, don't do this
+      - ${DNS_SERVER} # Points to unbound
+    environment:
+      TZ: time_zone
+      FTLCONF_webserver_api_password: ${FTLCONF_webserver_api_password:? Variable not set} # Blank password - Can be whatever you want.
+      FTLCONF_dns_listeningMode: 'all'
+      ServerIP: ${PIHOLE_IP:? Variable not set} # Internal IP of pihole
+      DNS1: ${DNS_SERVER:? Variable not set} # Unbound IP
+      DNS2: ${DNS_SERVER:? Variable not set} # If we don't specify two, it will auto pick google.
+      DNSSEC: "true"
+      REV_SERVER: "true"
+      REV_SERVER_DOMAIN: local
+      REV_SERVER_TARGET: router_ip_gateway # Your router IP
+      REV_SERVER_CIDR: 192.168.1.0/24 # Your home network
+    # Volumes store your data between container upgrades
+    volumes:
+      - ./network/pihole/etc-pihole/:/etc/pihole/
+      - ./network/pihole/etc-dnsmasq.d/:/etc/dnsmasq.d/
+    # Recommended but not required (DHCP needs NET_ADMIN)
+    #   https://github.com/pi-hole/docker-pi-hole#note-on-capabilities
+    cap_add:
+      - NET_ADMIN
+    depends_on: [unbound]
+    env_file:
+      - .env
+    # ports:
+      # - 53:53/tcp
+      # - 53:53/udp
+      # # Default HTTP Port
+      # - 80:80/tcp
+      # # Default HTTPs Port. FTL will generate a self-signed certificate
+      # - 443:443/tcp
+    networks:
+      network_backend:
+          ipv4_address: ${PIHOLE_IP:? Variable not set} # Internal IP of pihole
+
+  unbound:
+    # image: mvance/unbound:latest
+    image: klutchell/unbound:latest
+    container_name: unbound
+    hostname: unbound
+    restart: unless-stopped
+    environment:
+      TZ: time_zone
+      DNS_PORT: 53
+      DNS_IP: ${DNS_SERVER:? Variable not set}
+      VERBOSITY: 3
+    volumes:
+      - ./network/unbound/config:/opt/unbound/etc/unbound
+    networks:
+      network_backend:
+        ipv4_address: ${DNS_SERVER:? Variable not set} # Internal IP of unbound
+    env_file:
+      - .env
+
+  # If you don't use something with a static IP address, there is a DDNS service that you can also use. Not necessary for the VPN setup otherwise. This assumes you are already using Cloudflare as your DNS provider.
+  # ddns:
+  #   image: oznu/cloudflare-ddns:latest
+  #   container_name: ddns
+  #   restart: always
+  #   environment:
+  #     API_KEY: ${DDNS_API_KEY:? Variable must be set}
+  #     ZONE: fqdn.com
+  #     PROXIED: true
+  #     CRON: '*/5 * * * *'
+  #     RRTYPE: A
+  #   env_file:
+  #     - .env
+
+networks:
+  network_backend:
+    driver: bridge
+    name: network_backend
+    ipam:
+      config:
+        - subnet: 10.4.0.0/24
+          gateway: 10.4.0.1
